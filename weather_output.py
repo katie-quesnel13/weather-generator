@@ -154,6 +154,44 @@ def _pressure_color(pressure_kpa: float, standard_pressure_kpa: float) -> str:
     return _color_for_value("RdYlBu_r", pressure_anomaly, -5.0, 5.0)
 
 
+def _add_color_scales(figure, standard_pressure_kpa: float, figure_height: float) -> None:
+    scales = [
+        ("Temperature (°C)", "coolwarm", -30.0, 40.0),
+        ("Relative humidity (%)", "YlGnBu", 0.0, 110.0),
+        (
+            f"Pressure (kPa; local standard {standard_pressure_kpa:.1f})",
+            "RdYlBu_r",
+            standard_pressure_kpa - 5.0,
+            standard_pressure_kpa + 5.0,
+        ),
+        ("Wind speed (km/h)", "YlOrRd", 0.0, 120.0),
+        ("Precipitation total (mm)", "Blues", 0.0, 20.0),
+        ("Precipitation chance (%)", "Purples", 0.0, 100.0),
+    ]
+    for index, (label, cmap, minimum, maximum) in enumerate(scales):
+        column = index % 3
+        row = index // 3
+        left = 0.04 + column * 0.32
+        bottom_inches = 0.62 - row * 0.36
+        colorbar_axis = figure.add_axes(
+            [left, bottom_inches / figure_height, 0.28, 0.035 / figure_height]
+        )
+        colorbar = figure.colorbar(
+            ScalarMappable(
+                norm=Normalize(vmin=minimum, vmax=maximum),
+                cmap=cmap,
+            ),
+            cax=colorbar_axis,
+            orientation="horizontal",
+        )
+        colorbar.set_ticks(
+            [minimum, (minimum + maximum) / 2, maximum]
+        )
+        colorbar.ax.tick_params(labelsize=7, pad=1, length=2)
+        colorbar.set_label(label, fontsize=8, labelpad=1)
+        colorbar.ax.xaxis.set_label_position("top")
+
+
 def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
     """Save a color-coded weather report table with values and period changes."""
     if not engine.history_log:
@@ -248,8 +286,10 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
     else:
         grouping = "hourly"
 
-    figure_height = max(4.5, 2.4 + len(rows) * 0.36)
+    table_height_inches = (len(rows) + 1) * 0.34
+    figure_height = max(2.8, table_height_inches + 1.9)
     figure, axis = plt.subplots(figsize=(16, figure_height))
+    axis.set_position([0, 0, 1, 1])
     axis.axis("off")
     table = axis.table(
         cellText=rows,
@@ -258,11 +298,18 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
         cellLoc="center",
         colLoc="center",
         loc="center",
-        bbox=[0.01, 0.07, 0.98, 0.82],
+        bbox=[
+            0.01,
+            0.9 / figure_height,
+            0.98,
+            table_height_inches / figure_height,
+        ],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(8)
+    table.set_fontsize(8.5)
     for (row_index, _), cell in table.get_celld().items():
+        cell.set_edgecolor("#cbd5e1")
+        cell.set_linewidth(0.5)
         if row_index == 0:
             cell.set_facecolor("#1e293b")
             cell.set_text_props(color="white", weight="bold")
@@ -270,39 +317,27 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
             background = cell.get_facecolor()
             luminance = sum(background[:3]) / 3
             cell.set_text_props(color="white" if luminance < 0.45 else "#172033")
-    figure.suptitle(
-        f"Weather Report | {engine.base_data.fullname} ({engine.climate_code})\n"
-        f"{engine.starting_season.title()} start · {total_hours:,} hours · "
-        f"{grouping} summaries",
+    figure.text(
+        0.02,
+        (figure_height - 0.24) / figure_height,
+        f"Weather Report  |  {engine.base_data.fullname} ({engine.climate_code})",
         fontsize=15,
         weight="bold",
-        y=0.98,
+        color="#0f172a",
+        zorder=20,
+        clip_on=False,
     )
     figure.text(
         0.02,
-        0.925,
-        "Values are bucket-end readings; Δ is change from the previous bucket "
-        "(first bucket vs. baseline). Precipitation is the bucket total.",
+        (figure_height - 0.52) / figure_height,
+        f"{engine.starting_season.title()} start  ·  {total_hours:,} hours  ·  "
+        f"{grouping} summaries  ·  Values show bucket-end reading (Δ from prior bucket)",
         fontsize=9,
         color="#475569",
+        zorder=20,
+        clip_on=False,
     )
-    pressure_colorbar = ScalarMappable(
-        norm=Normalize(
-            vmin=engine.standard_pressure_kpa - 5.0,
-            vmax=engine.standard_pressure_kpa + 5.0,
-        ),
-        cmap="RdYlBu_r",
-    )
-    colorbar_axis = figure.add_axes([0.34, 0.025, 0.32, 0.018])
-    colorbar = figure.colorbar(
-        pressure_colorbar,
-        cax=colorbar_axis,
-        orientation="horizontal",
-    )
-    colorbar.set_label(
-        f"Pressure (kPa; midpoint = local standard {engine.standard_pressure_kpa:.1f} kPa)",
-        fontsize=8,
-    )
+    _add_color_scales(figure, engine.standard_pressure_kpa, figure_height)
     figure.savefig(destination, dpi=150)
     plt.close(figure)
     return destination

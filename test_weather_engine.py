@@ -8,11 +8,14 @@ from dataclasses import replace
 from datetime import datetime
 from unittest.mock import patch
 
+from matplotlib import pyplot as plt
+
 from climate_presets import climate_options
 from climate_presets import MAX_RELATIVE_HUMIDITY_PERCENT
 from weather_engine import ALTITUDE_LEVELS_KM, IntermittentFrontWeatherEngine
 from main import parse_duration_hours, run_simulation
 from weather_output import (
+    _add_color_scales,
     _pressure_color,
     build_weather_report_buckets,
     chart_bucket_hours,
@@ -490,6 +493,26 @@ class WeatherEngineTests(unittest.TestCase):
         self.assertNotEqual(low_color, normal_color)
         self.assertNotEqual(normal_color, high_color)
         self.assertNotEqual(low_color, high_color)
+
+    def test_chart_includes_labeled_scales_for_colored_parameters(self):
+        figure = plt.figure()
+        try:
+            _add_color_scales(figure, 101.3, 3.0)
+            labels = {
+                axis.get_xlabel()
+                for axis in figure.axes
+                if axis.get_xlabel()
+            }
+
+            self.assertEqual(len(labels), 6)
+            self.assertTrue(any(label.startswith("Temperature (°C)") for label in labels))
+            self.assertTrue(any(label.startswith("Relative humidity (%)") for label in labels))
+            self.assertTrue(any(label.startswith("Pressure (kPa; local standard") for label in labels))
+            self.assertTrue(any(label.startswith("Wind speed (km/h)") for label in labels))
+            self.assertTrue(any(label.startswith("Precipitation total (mm)") for label in labels))
+            self.assertTrue(any(label.startswith("Precipitation chance (%)") for label in labels))
+        finally:
+            plt.close(figure)
 
 if __name__ == "__main__":
     unittest.main()
