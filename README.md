@@ -27,9 +27,24 @@ python main.py
 ```
 
 The program prompts for a Köppen climate code, a season (`winter`, `spring`,
-`summer`, or `fall`), an altitude level, and the simulation duration in hours.
-Climate codes are case-insensitive; the available codes are shown in the CLI.
-Leave the altitude prompt blank to use the selected climate's default.
+`summer`, or `fall`), an altitude level, and the simulation duration. Climate
+codes are case-insensitive; the available codes are shown in the CLI. Leave
+the altitude prompt blank to use the selected climate's default.
+
+Enter the duration as one or more whole-number and unit pairs using `hours`,
+`days`, `weeks`, `months`, or `years`; a number without a unit is interpreted
+as hours. For example, `72`, `3 days`, `2 weeks 3 days`, `1 month`, and
+`1 year 2 months` are valid. The simulator uses 30 days per month and 365 days
+per year, and runs its timeline in hourly steps.
+
+The selected season starts on day 1 of its season. To keep long simulations
+aligned with an approximately 365-day year, season lengths are winter 90 days,
+spring 92 days, summer 92 days, and fall 91 days. The simulation advances
+through winter, spring, summer, and fall in that order, then repeats, starting
+from the season you selected. On each change, the new climate-season baseline is used for
+precipitation and for gradual pressure, temperature, and relative-humidity
+adjustment; existing weather state is not reset. Season changes are noted in
+hourly reports and recorded in the timeline and chart.
 
 For runs of up to 50 hours, hourly reports and events are printed as the
 simulation runs. Longer runs are saved without printing every hourly report;
@@ -97,8 +112,16 @@ Each run creates files in the `generated` directory:
 - A timestamped JSON file containing climate and altitude metadata, units, and
   hourly measurements including relative humidity, precipitation probability,
   and precipitation amount.
-- A PNG chart showing central relative humidity, precipitation probability,
-  and temperature over time.
+- A color-coded PNG weather report with bucket-end temperature, relative
+  humidity, pressure, wind, precipitation probability, and front status.
+  Measurements include their change from the previous bucket; precipitation
+  is totaled within each bucket.
+
+The report groups hourly samples according to run length: hourly for up to two
+days, three-hour periods through one week, six-hour periods beyond one week,
+daily periods from 30 days, and weekly periods from 365 days. The first
+bucket's changes are measured against the climate baseline (and zero
+precipitation/wind).
 
 Pressure is measured in kPa, temperature in degrees Celsius, relative humidity
 in percent, and precipitation in millimeters.

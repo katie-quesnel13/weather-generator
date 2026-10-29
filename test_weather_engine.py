@@ -2,22 +2,78 @@
 
 import math
 import random
+import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime
 from unittest.mock import patch
 
 from climate_presets import climate_options
 from climate_presets import MAX_RELATIVE_HUMIDITY_PERCENT
 from weather_engine import ALTITUDE_LEVELS_KM, IntermittentFrontWeatherEngine
-from main import run_simulation
+from main import parse_duration_hours, run_simulation
+from weather_output import build_weather_report_buckets, chart_bucket_hours, save_chart
 
 
 class WeatherEngineTests(unittest.TestCase):
+    def test_duration_parser_defaults_to_hours_and_converts_units(self):
+        examples = {
+            "24": 24,
+            "24 hours": 24,
+            "2 days": 48,
+            "3 weeks": 3 * 7 * 24,
+            "1 month": 30 * 24,
+            "2 years": 2 * 365 * 24,
+            "2 weeks 3 days": (2 * 7 + 3) * 24,
+            "1 year 2 months 5 days 4 hours": (365 + 2 * 30 + 5) * 24 + 4,
+            "0 weeks 3 days": 3 * 24,
+            " 1 DAY ": 24,
+        }
+        for duration, expected_hours in examples.items():
+            with self.subTest(duration=duration):
+                self.assertEqual(parse_duration_hours(duration), expected_hours)
+
+    def test_duration_parser_rejects_invalid_entries(self):
+        for duration in (
+            "", "0", "-1 days", "1.5 weeks", "2 fortnights", "days",
+            "2 weeks, 3 days", "2 weeks 3", "2 weeks and 3 days",
+        ):
+            with self.subTest(duration=duration):
+                with self.assertRaises(ValueError):
+                    parse_duration_hours(duration)
+
     def test_climate_code_is_case_insensitive(self):
         a = IntermittentFrontWeatherEngine("cfb", "winter", random.Random(4))
         b = IntermittentFrontWeatherEngine(" Cfb ", "WINTER", random.Random(4))
         self.assertEqual(a.climate_code, b.climate_code)
         self.assertEqual(a.center, b.center)
+
+    def test_season_lengths_align_to_a_365_day_year(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(4))
+
+        winter_hours = engine.SEASON_LENGTH_DAYS["winter"] * 24
+        engine.season_elapsed_hours = winter_hours - 1
+        engine._advance_season()
+        self.assertEqual(engine.season, "winter")
+        self.assertFalse(engine.events)
+
+        engine.season_elapsed_hours += 1
+        engine._advance_season()
+        self.assertEqual(engine.season, "spring")
+        self.assertEqual(engine.season_node, climate_options["Cfb"].spring)
+        self.assertTrue(any("day 1 of its 92-day period" in event for event in engine.events))
+
+        engine.events.clear()
+        engine.season_elapsed_hours = engine.SEASON_LENGTH_DAYS["spring"] * 24
+        engine._advance_season()
+        self.assertEqual(engine.season, "summer")
+        engine.season_elapsed_hours = engine.SEASON_LENGTH_DAYS["summer"] * 24
+        engine._advance_season()
+        self.assertEqual(engine.season, "fall")
+        engine.season_elapsed_hours = engine.SEASON_LENGTH_DAYS["fall"] * 24
+        engine._advance_season()
+        self.assertEqual(engine.season, "winter")
+        self.assertEqual(sum(engine.SEASON_LENGTH_DAYS.values()), 365)
 
     def test_invalid_climate_and_season_raise(self):
         with self.assertRaises(ValueError):
@@ -319,6 +375,54 @@ class WeatherEngineTests(unittest.TestCase):
         run_simulation(long_engine, 51, long_console.append)
         self.assertEqual(long_console, [])
         self.assertTrue(all("report" in row for row in long_engine.history_log))
+
+    def test_chart_aggregation_scales_with_simulation_duration(self):
+        self.assertEqual(chart_bucket_hours(48), 1)
+        self.assertEqual(chart_bucket_hours(49), 3)
+        self.assertEqual(chart_bucket_hours(168), 3)
+        self.assertEqual(chart_bucket_hours(169), 6)
+        self.assertEqual(chart_bucket_hours(30 * 24), 24)
+        self.assertEqual(chart_bucket_hours(365 * 24), 168)
+
+    def test_weather_report_buckets_show_end_values_changes_and_precipitation_total(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.history_log = [
+            {
+                "elapsed_hours": hour,
+                "temperature_celsius": 10.0 + hour,
+                "relative_humidity_pct": 60.0 + hour,
+                "air_pressure_kpa": 101.0,
+                "wind_speed_kmh": float(hour),
+                "wind_direction": "W",
+                "precip_chance_pct": 20.0,
+                "precipitation_mm": 0.5,
+                "front_active": False,
+                "season": "summer",
+            }
+            for hour in range(1, 51)
+        ]
+
+        buckets = build_weather_report_buckets(engine)
+
+        self.assertEqual(len(buckets), 17)
+        self.assertEqual(buckets[0].label, "Hours 1-3")
+        self.assertEqual(buckets[0].current["temperature_celsius"], 13.0)
+        self.assertAlmostEqual(
+            buckets[0].differences["temperature_celsius"],
+            13.0 - engine.season_node.temperature_celsius,
+        )
+        self.assertEqual(buckets[0].precipitation_total_mm, 1.5)
+        self.assertEqual(buckets[0].precipitation_change_mm, 1.5)
+
+    def test_weather_report_chart_is_saved(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.update_weather_tick(1)
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            chart_path = save_chart(datetime.now(), engine, output_dir)
+
+            self.assertTrue(chart_path.is_file())
+            self.assertGreater(chart_path.stat().st_size, 0)
 
 if __name__ == "__main__":
     unittest.main()

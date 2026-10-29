@@ -7,6 +7,7 @@ from typing import TypedDict
 
 from climate_presets import (
     MAX_RELATIVE_HUMIDITY_PERCENT,
+    SeasonData,
     climate_options,
     get_varied_base,
 )
@@ -26,6 +27,7 @@ ALTITUDE_LEVELS_KM: dict[str, tuple[float, str]] = {
 class WeatherTick(TypedDict):
     tick: int
     elapsed_hours: int
+    season: str
     temperature_celsius: float
     relative_humidity_pct: float
     air_pressure_kpa: float
@@ -45,6 +47,13 @@ class IntermittentFrontWeatherEngine:
     STANDARD_PRESSURE_KPA = 101.3
     FRONT_SPAWN_CHANCE_PERCENT = 4.0
     HOURS_PER_MONTH = 30.0 * 24.0
+    SEASON_LENGTH_DAYS = {
+        "winter": 90,
+        "spring": 92,
+        "summer": 92,
+        "fall": 91,
+    }
+    SEASON_ORDER = ("winter", "spring", "summer", "fall")
     FREEZING_POINT_CELSIUS = 0.0
 
     def __init__(
@@ -62,8 +71,10 @@ class IntermittentFrontWeatherEngine:
             raise ValueError(f"Climate code '{central_climate_code}' is invalid.")
 
         self.season = season.strip().lower()
+        self.starting_season = self.season
+        self.season_elapsed_hours = 0
         self.base_data = climate_options[self.climate_code]
-        if self.season not in ("winter", "spring", "summer", "fall"):
+        if self.season not in self.SEASON_ORDER:
             raise ValueError(f"Season '{season}' is invalid.")
 
         selected_altitude = (
@@ -81,19 +92,7 @@ class IntermittentFrontWeatherEngine:
             self.base_data.default_altitude
         ][0]
         self.altitude_delta_km = self.altitude_km - self.reference_altitude_km
-        sea_level_season = getattr(self.base_data, self.season)
-        self.season_node = replace(
-            sea_level_season,
-            air_pressure_kpa=self._adjust_pressure_for_altitude(
-                sea_level_season.air_pressure_kpa, self.altitude_delta_km
-            ),
-            relative_humidity_percent=self._adjust_relative_humidity_for_altitude(
-                sea_level_season.relative_humidity_percent, self.altitude_delta_km
-            ),
-            temperature_celsius=self._adjust_temperature_for_altitude(
-                sea_level_season.temperature_celsius, self.altitude_delta_km
-            ),
-        )
+        self.season_node = self._get_season_node(self.season)
         self.standard_pressure_kpa = self._adjust_pressure_for_altitude(
             self.STANDARD_PRESSURE_KPA, self.altitude_km
         )
@@ -128,6 +127,35 @@ class IntermittentFrontWeatherEngine:
             relative_humidity_percent - 2.0 * altitude_delta_km,
             0.0,
             MAX_RELATIVE_HUMIDITY_PERCENT,
+        )
+
+    def _get_season_node(self, season: str) -> SeasonData:
+        baseline = getattr(self.base_data, season)
+        return replace(
+            baseline,
+            air_pressure_kpa=self._adjust_pressure_for_altitude(
+                baseline.air_pressure_kpa, self.altitude_delta_km
+            ),
+            relative_humidity_percent=self._adjust_relative_humidity_for_altitude(
+                baseline.relative_humidity_percent, self.altitude_delta_km
+            ),
+            temperature_celsius=self._adjust_temperature_for_altitude(
+                baseline.temperature_celsius, self.altitude_delta_km
+            ),
+        )
+
+    def _advance_season(self) -> None:
+        current_season_hours = self.SEASON_LENGTH_DAYS[self.season] * 24
+        if self.season_elapsed_hours < current_season_hours:
+            return
+
+        current_index = self.SEASON_ORDER.index(self.season)
+        self.season = self.SEASON_ORDER[(current_index + 1) % len(self.SEASON_ORDER)]
+        self.season_node = self._get_season_node(self.season)
+        self.season_elapsed_hours -= current_season_hours
+        self.events.append(
+            f"The season has changed to {self.season} "
+            f"(day 1 of its {self.SEASON_LENGTH_DAYS[self.season]}-day period)."
         )
 
     def _initialize_regions(self) -> None:
@@ -208,7 +236,21 @@ class IntermittentFrontWeatherEngine:
                 )
                 continue
 
+            previous_temperature = region.temperature_celsius
+            region.temperature_celsius += (
+                self.season_node.temperature_celsius - region.temperature_celsius
+            ) * 0.005
+            region.relative_humidity_percent = (
+                self._adjust_relative_humidity_for_temperature(
+                    region.relative_humidity_percent,
+                    previous_temperature,
+                    region.temperature_celsius,
+                )
+            )
             region.air_pressure_kpa += self.rng.uniform(-0.015, 0.015)
+            region.air_pressure_kpa += (
+                self.season_node.air_pressure_kpa - region.air_pressure_kpa
+            ) * 0.01
             relative_humidity_delta = self.season_node.relative_humidity_percent - region.relative_humidity_percent
             region.relative_humidity_percent += relative_humidity_delta * 0.05 + self.rng.uniform(-1.0, 1.0)
             region.relative_humidity_percent = self._clamp(
@@ -218,9 +260,13 @@ class IntermittentFrontWeatherEngine:
             )
 
     def _update_center_fluctuations(self) -> None:
-        self.center.air_pressure_kpa += self.rng.uniform(-0.01, 0.01)
+        self.center.air_pressure_kpa += (
+            self.season_node.air_pressure_kpa - self.center.air_pressure_kpa
+        ) * 0.01 + self.rng.uniform(-0.01, 0.01)
         previous_temperature = self.center.temperature_celsius
-        self.center.temperature_celsius += self.rng.uniform(-0.15, 0.15)
+        self.center.temperature_celsius += (
+            self.season_node.temperature_celsius - self.center.temperature_celsius
+        ) * 0.005 + self.rng.uniform(-0.15, 0.15)
         self.center.relative_humidity_percent = (
             self._adjust_relative_humidity_for_temperature(
                 self.center.relative_humidity_percent,
@@ -398,6 +444,7 @@ class IntermittentFrontWeatherEngine:
         metrics: WeatherTick = {
             "tick": tick_id,
             "elapsed_hours": elapsed_hours,
+            "season": self.season,
             "temperature_celsius": temperature,
             "relative_humidity_pct": relative_humidity,
             "air_pressure_kpa": pressure,
@@ -415,6 +462,7 @@ class IntermittentFrontWeatherEngine:
     def update_weather_tick(self, tick_id: int) -> WeatherTick:
         """Advance the simulation by one tick and return its recorded metrics."""
         self.events.clear()
+        self._advance_season()
         self._update_front()
         self._update_regions()
         self._update_center_fluctuations()
@@ -442,10 +490,12 @@ class IntermittentFrontWeatherEngine:
                 f"Precipitation occurred: {precipitation_mm:.2f} mm "
                 f"({precipitation_chance:.1f}% chance)."
             )
-        return self._record_tick(
+        metrics = self._record_tick(
             tick_id, wind_speed, wind_direction, precipitation_chance,
             precipitation_occurred, precipitation_mm,
         )
+        self.season_elapsed_hours += 1
+        return metrics
 
     @staticmethod
     def _clamp(value: float, minimum: float, maximum: float) -> float:
