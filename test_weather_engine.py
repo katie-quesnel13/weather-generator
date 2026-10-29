@@ -1,6 +1,7 @@
 """Regression tests for the weather generator's core behavior."""
 
 import math
+import json
 import random
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ from weather_output import (
     _pressure_color,
     build_weather_report_buckets,
     chart_bucket_hours,
+    decode_timeline,
     save_chart,
     save_json,
 )
@@ -483,6 +485,38 @@ class WeatherEngineTests(unittest.TestCase):
             json_path = save_json(datetime.now(), engine, output_dir)
 
             self.assertIn("_winter_", json_path.name)
+
+    def test_json_stores_compact_timeline_with_implicit_elapsed_hours(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        for tick in range(1, 4):
+            engine.update_weather_tick(tick)
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            json_path = save_json(datetime.now(), engine, output_dir)
+            serialized_packet = json_path.read_text(encoding="utf-8")
+            packet = json.loads(serialized_packet)
+
+        self.assertEqual(packet["format_version"], 2)
+        self.assertNotIn("total_ticks", packet)
+        self.assertNotIn("total_hours", packet)
+        self.assertNotIn("tick", packet["timeline_fields"])
+        self.assertNotIn("elapsed_hours", packet["timeline_fields"])
+        self.assertEqual(len(packet["timeline_data"]), 3)
+        timeline_text = serialized_packet.split('"timeline_data": [\n', 1)[1].split(
+            "\n  ]", 1
+        )[0]
+        timeline_lines = timeline_text.splitlines()
+        self.assertEqual(len(timeline_lines), 3)
+        self.assertTrue(all(line.startswith("    [") for line in timeline_lines))
+        self.assertTrue(all(line.endswith("],") for line in timeline_lines[:-1]))
+        self.assertTrue(timeline_lines[-1].endswith("]"))
+        self.assertTrue(all(len(row) == len(packet["timeline_fields"]) for row in packet["timeline_data"]))
+        decoded = decode_timeline(packet)
+        for source, row in zip(engine.history_log, decoded):
+            self.assertEqual(
+                row,
+                source,
+            )
 
     def test_pressure_colors_track_anomaly_around_local_standard(self):
         standard = 90.0

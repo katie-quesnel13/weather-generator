@@ -117,6 +117,13 @@ Each run creates files in the `generated` directory:
   Measurements include their change from the previous bucket; precipitation
   is totaled within each bucket.
 
+The JSON timeline uses positional rows: `timeline_fields` gives the name for
+each value in every `timeline_data` row. Tick numbers and elapsed hours are
+derived from the one-based row position and `tick_duration_hours`, so neither
+is repeated in every record. The row count provides the total tick count.
+`format_version` identifies this compact layout. Code that needs named samples
+can use `decode_timeline` to expand the rows and restore those derived fields.
+
 The report groups hourly samples according to run length: hourly for up to two
 days, three-hour periods through one week, six-hour periods beyond one week,
 daily periods from 30 days, weekly periods from 365 days, and monthly periods

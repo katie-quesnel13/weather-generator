@@ -10,8 +10,29 @@ from matplotlib.colors import Normalize, to_hex
 from matplotlib.cm import ScalarMappable
 
 
+SAVED_TICK_FIELDS = (
+    "season",
+    "temperature_celsius",
+    "relative_humidity_pct",
+    "air_pressure_kpa",
+    "wind_speed_kmh",
+    "wind_direction",
+    "precip_chance_pct",
+    "precipitation_occurred",
+    "precipitation_mm",
+    "front_active",
+    "report",
+)
+
+
 def save_json(timestamp, engine, output_dir: str | Path = "generated") -> Path:
-    """Write simulation metadata and tick history to a JSON file."""
+    """Write metadata and compact positional tick rows to a JSON file."""
+    for row_index, tick in enumerate(engine.history_log, start=1):
+        if tick["tick"] != row_index or tick["elapsed_hours"] != row_index:
+            raise ValueError(
+                "Compact timeline output requires sequential hourly tick data."
+            )
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     filename = (
@@ -28,16 +49,56 @@ def save_json(timestamp, engine, output_dir: str | Path = "generated") -> Path:
         "altitude_km": engine.altitude_km,
         "climate_default_altitude": engine.base_data.default_altitude,
         "climate_reference_altitude_km": engine.reference_altitude_km,
-        "total_ticks": len(engine.history_log),
+        "format_version": 2,
         "tick_duration_hours": 1,
-        "total_hours": len(engine.history_log),
         "timestamp": timestamp.isoformat(),
         "pressure_unit": "kPa",
         "precipitation_unit": "mm",
-        "timeline_data": engine.history_log,
+        "timeline_fields": list(SAVED_TICK_FIELDS),
     }
-    destination.write_text(json.dumps(packet, indent=4), encoding="utf-8")
+    timeline_rows = [
+            [tick[field] for field in SAVED_TICK_FIELDS]
+            for tick in engine.history_log
+    ]
+    serialized_packet = json.dumps(packet, indent=2)
+    serialized_rows = ",\n".join(
+        f"    {json.dumps(row, separators=(',', ':'))}"
+        for row in timeline_rows
+    )
+    destination.write_text(
+        f'{serialized_packet[:-1]},\n  "timeline_data": [\n'
+        f"{serialized_rows}\n  ]\n}}\n",
+        encoding="utf-8",
+    )
     return destination
+
+
+def decode_timeline(packet: dict) -> list[dict]:
+    """Expand compact timeline rows into named samples with derived time fields."""
+    if packet.get("format_version") != 2:
+        raise ValueError(f"Unsupported timeline format: {packet.get('format_version')}")
+
+    fields = packet.get("timeline_fields")
+    rows = packet.get("timeline_data")
+    tick_duration_hours = packet.get("tick_duration_hours")
+    if not isinstance(fields, list) or not isinstance(rows, list):
+        raise ValueError("Timeline fields and data must be lists.")
+    if not isinstance(tick_duration_hours, int) or tick_duration_hours <= 0:
+        raise ValueError("tick_duration_hours must be a positive integer.")
+    if not all(isinstance(field, str) for field in fields):
+        raise ValueError("timeline_fields must contain only field names.")
+    if len(fields) != len(set(fields)):
+        raise ValueError("timeline_fields must not contain duplicates.")
+
+    decoded = []
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, list) or len(row) != len(fields):
+            raise ValueError(f"Timeline row {row_index} does not match timeline_fields.")
+        sample = dict(zip(fields, row))
+        sample["tick"] = row_index
+        sample["elapsed_hours"] = row_index * tick_duration_hours
+        decoded.append(sample)
+    return decoded
 
 
 @dataclass(frozen=True)
