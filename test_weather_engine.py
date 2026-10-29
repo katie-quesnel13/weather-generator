@@ -12,7 +12,13 @@ from climate_presets import climate_options
 from climate_presets import MAX_RELATIVE_HUMIDITY_PERCENT
 from weather_engine import ALTITUDE_LEVELS_KM, IntermittentFrontWeatherEngine
 from main import parse_duration_hours, run_simulation
-from weather_output import build_weather_report_buckets, chart_bucket_hours, save_chart
+from weather_output import (
+    _pressure_color,
+    build_weather_report_buckets,
+    chart_bucket_hours,
+    save_chart,
+    save_json,
+)
 
 
 class WeatherEngineTests(unittest.TestCase):
@@ -331,6 +337,18 @@ class WeatherEngineTests(unittest.TestCase):
                 self.assertGreater(wind_speed, 0.5)
                 self.assertEqual(wind_direction, direction)
 
+    def test_simulated_wind_speeds_stay_in_a_reasonable_range(self):
+        engine = IntermittentFrontWeatherEngine("Cwb", "summer", random.Random(123))
+        speeds = [
+            engine.update_weather_tick(tick)["wind_speed_kmh"]
+            for tick in range(1, 1001)
+        ]
+        ordered_speeds = sorted(speeds)
+
+        self.assertLess(ordered_speeds[len(ordered_speeds) // 2], 30.0)
+        self.assertLess(ordered_speeds[int(len(ordered_speeds) * 0.9)], 50.0)
+        self.assertLess(max(ordered_speeds), 70.0)
+
     def test_relative_humidity_advection_uses_wind_from_region(self):
         engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(1))
         center_pressure = engine.center.air_pressure_kpa
@@ -342,14 +360,14 @@ class WeatherEngineTests(unittest.TestCase):
                     region.air_pressure_kpa = center_pressure
                     region.relative_humidity_percent = 20.0
 
-                engine.regions[direction].air_pressure_kpa = center_pressure + 0.1
+                engine.regions[direction].air_pressure_kpa = center_pressure + 1.0
                 engine.regions[direction].relative_humidity_percent = 80.0
                 wind_speed, wind_direction = engine._calculate_wind()
 
                 self.assertEqual(wind_direction, direction)
                 engine._advect_relative_humidity(wind_speed, wind_direction)
 
-                self.assertAlmostEqual(engine.center.relative_humidity_percent, 56.0)
+                self.assertAlmostEqual(engine.center.relative_humidity_percent, 51.5)
 
     def test_run_simulation_records_requested_ticks(self):
         engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(10))
@@ -383,6 +401,7 @@ class WeatherEngineTests(unittest.TestCase):
         self.assertEqual(chart_bucket_hours(169), 6)
         self.assertEqual(chart_bucket_hours(30 * 24), 24)
         self.assertEqual(chart_bucket_hours(365 * 24), 168)
+        self.assertEqual(chart_bucket_hours(2 * 365 * 24), 30 * 24)
 
     def test_weather_report_buckets_show_end_values_changes_and_precipitation_total(self):
         engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
@@ -416,6 +435,8 @@ class WeatherEngineTests(unittest.TestCase):
 
     def test_weather_report_chart_is_saved(self):
         engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.starting_season = "winter"
+        engine.season = "spring"
         engine.update_weather_tick(1)
 
         with tempfile.TemporaryDirectory() as output_dir:
@@ -423,6 +444,52 @@ class WeatherEngineTests(unittest.TestCase):
 
             self.assertTrue(chart_path.is_file())
             self.assertGreater(chart_path.stat().st_size, 0)
+            self.assertIn("_winter_", chart_path.name)
+
+    def test_multi_year_chart_uses_month_labels(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.history_log = [
+            {
+                "elapsed_hours": hour,
+                "temperature_celsius": 10.0,
+                "relative_humidity_pct": 60.0,
+                "air_pressure_kpa": 101.0,
+                "wind_speed_kmh": 5.0,
+                "wind_direction": "W",
+                "precip_chance_pct": 20.0,
+                "precipitation_mm": 0.1,
+                "front_active": False,
+                "season": "summer",
+            }
+            for hour in range(1, 2 * 365 * 24 + 1)
+        ]
+
+        buckets = build_weather_report_buckets(engine)
+
+        self.assertEqual(len(buckets), 25)
+        self.assertEqual(buckets[0].label, "Month 1")
+        self.assertEqual(buckets[-1].label, "Month 25")
+        self.assertAlmostEqual(buckets[0].precipitation_total_mm, 72.0)
+
+    def test_json_filename_uses_starting_season(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.starting_season = "winter"
+        engine.season = "spring"
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            json_path = save_json(datetime.now(), engine, output_dir)
+
+            self.assertIn("_winter_", json_path.name)
+
+    def test_pressure_colors_track_anomaly_around_local_standard(self):
+        standard = 90.0
+        low_color = _pressure_color(standard - 4.0, standard)
+        normal_color = _pressure_color(standard, standard)
+        high_color = _pressure_color(standard + 4.0, standard)
+
+        self.assertNotEqual(low_color, normal_color)
+        self.assertNotEqual(normal_color, high_color)
+        self.assertNotEqual(low_color, high_color)
 
 if __name__ == "__main__":
     unittest.main()

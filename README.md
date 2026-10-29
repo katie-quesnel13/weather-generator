@@ -119,9 +119,12 @@ Each run creates files in the `generated` directory:
 
 The report groups hourly samples according to run length: hourly for up to two
 days, three-hour periods through one week, six-hour periods beyond one week,
-daily periods from 30 days, and weekly periods from 365 days. The first
-bucket's changes are measured against the climate baseline (and zero
-precipitation/wind).
+daily periods from 30 days, weekly periods from 365 days, and monthly periods
+from two years. Monthly chart buckets use 30 days. The first bucket's changes
+are measured against the climate baseline (and zero precipitation/wind).
 
 Pressure is measured in kPa, temperature in degrees Celsius, relative humidity
-in percent, and precipitation in millimeters.
+in percent, wind speed in km/h, and precipitation in millimeters. Wind speed is
+estimated from the pressure gradient with a reduced scale to keep typical
+simulated winds within a more realistic range; it is a simplified model rather
+than a local wind forecast.

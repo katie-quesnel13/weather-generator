@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import to_hex
+from matplotlib.colors import Normalize, to_hex
+from matplotlib.cm import ScalarMappable
 
 
 def save_json(timestamp, engine, output_dir: str | Path = "generated") -> Path:
@@ -14,7 +15,7 @@ def save_json(timestamp, engine, output_dir: str | Path = "generated") -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     filename = (
-        f"weather_{engine.climate_code}_{engine.season}_"
+        f"weather_{engine.climate_code}_{engine.starting_season}_"
         f"{timestamp.strftime('%Y%m%d_%H%M%S_%f')}.json"
     )
     destination = output_path / filename
@@ -50,6 +51,8 @@ class WeatherReportBucket:
 
 def chart_bucket_hours(total_hours: int) -> int:
     """Choose a chart aggregation interval that stays readable for long runs."""
+    if total_hours >= 2 * 365 * 24:
+        return 30 * 24
     if total_hours >= 365 * 24:
         return 7 * 24
     if total_hours >= 30 * 24:
@@ -109,7 +112,9 @@ def build_weather_report_buckets(engine) -> list[WeatherReportBucket]:
 
         start_hour = start_index + 1
         end_hour = start_index + len(samples)
-        if bucket_hours >= 7 * 24:
+        if bucket_hours == 30 * 24:
+            label = f"Month {(start_index // bucket_hours) + 1}"
+        elif bucket_hours >= 7 * 24:
             label = f"Week {(start_index // bucket_hours) + 1}"
         elif bucket_hours >= 24:
             label = f"Day {(start_index // bucket_hours) + 1}"
@@ -144,6 +149,11 @@ def _color_for_value(cmap_name: str, value: float, minimum: float, maximum: floa
     return to_hex(plt.get_cmap(cmap_name)(normalized))
 
 
+def _pressure_color(pressure_kpa: float, standard_pressure_kpa: float) -> str:
+    pressure_anomaly = pressure_kpa - standard_pressure_kpa
+    return _color_for_value("RdYlBu_r", pressure_anomaly, -5.0, 5.0)
+
+
 def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
     """Save a color-coded weather report table with values and period changes."""
     if not engine.history_log:
@@ -152,7 +162,7 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     filename = (
-        f"weather_{engine.climate_code}_{engine.season}_"
+        f"weather_{engine.climate_code}_{engine.starting_season}_"
         f"{timestamp.strftime('%Y%m%d_%H%M%S_%f')}.png"
     )
     destination = output_path / filename
@@ -211,7 +221,10 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
             "#e0f2fe",
             _color_for_value("coolwarm", float(current["temperature_celsius"]), -30, 40),
             _color_for_value("YlGnBu", float(current["relative_humidity_pct"]), 0, 110),
-            _color_for_value("RdYlGn_r", float(current["air_pressure_kpa"]), 70, 105),
+            _pressure_color(
+                float(current["air_pressure_kpa"]),
+                engine.standard_pressure_kpa,
+            ),
             _color_for_value("YlOrRd", float(current["wind_speed_kmh"]), 0, 120),
             "#e2e8f0",
             _color_for_value("Blues", bucket.precipitation_total_mm, 0, 20),
@@ -222,7 +235,9 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
 
     total_hours = len(engine.history_log)
     bucket_hours = chart_bucket_hours(total_hours)
-    if bucket_hours >= 7 * 24:
+    if bucket_hours == 30 * 24:
+        grouping = "monthly"
+    elif bucket_hours >= 7 * 24:
         grouping = "weekly"
     elif bucket_hours >= 24:
         grouping = "daily"
@@ -243,7 +258,7 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
         cellLoc="center",
         colLoc="center",
         loc="center",
-        bbox=[0.01, 0.01, 0.98, 0.88],
+        bbox=[0.01, 0.07, 0.98, 0.82],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(8)
@@ -271,7 +286,23 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
         fontsize=9,
         color="#475569",
     )
-    figure.tight_layout(rect=[0, 0, 1, 0.91])
+    pressure_colorbar = ScalarMappable(
+        norm=Normalize(
+            vmin=engine.standard_pressure_kpa - 5.0,
+            vmax=engine.standard_pressure_kpa + 5.0,
+        ),
+        cmap="RdYlBu_r",
+    )
+    colorbar_axis = figure.add_axes([0.34, 0.025, 0.32, 0.018])
+    colorbar = figure.colorbar(
+        pressure_colorbar,
+        cax=colorbar_axis,
+        orientation="horizontal",
+    )
+    colorbar.set_label(
+        f"Pressure (kPa; midpoint = local standard {engine.standard_pressure_kpa:.1f} kPa)",
+        fontsize=8,
+    )
     figure.savefig(destination, dpi=150)
     plt.close(figure)
     return destination

@@ -45,6 +45,7 @@ class IntermittentFrontWeatherEngine:
 
     DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
     STANDARD_PRESSURE_KPA = 101.3
+    WIND_SPEED_SCALE_KMH_PER_KPA = 5.0
     FRONT_SPAWN_CHANCE_PERCENT = 4.0
     HOURS_PER_MONTH = 30.0 * 24.0
     SEASON_LENGTH_DAYS = {
@@ -284,9 +285,9 @@ class IntermittentFrontWeatherEngine:
             net_x += pressure_delta * math.sin(angle_radians)
             net_y += pressure_delta * math.cos(angle_radians)
 
-        # Pressure differences are now in kPa (10x smaller than the old hPa-like
-        # values), so this scale factor preserves roughly the prior wind-speed range.
-        wind_speed = round(math.hypot(net_x, net_y) * 200.0, 1)
+        wind_speed = round(
+            math.hypot(net_x, net_y) * self.WIND_SPEED_SCALE_KMH_PER_KPA, 1
+        )
         if wind_speed <= 0.5:
             return 0.0, "Calm"
 
