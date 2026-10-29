@@ -1,11 +1,14 @@
 """Regression tests for the weather generator's core behavior."""
 
+import math
 import random
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from climate_presets import climate_options
-from weather_engine import IntermittentFrontWeatherEngine
+from climate_presets import MAX_RELATIVE_HUMIDITY_PERCENT
+from weather_engine import ALTITUDE_LEVELS_KM, IntermittentFrontWeatherEngine
 from main import run_simulation
 
 
@@ -21,12 +24,90 @@ class WeatherEngineTests(unittest.TestCase):
             IntermittentFrontWeatherEngine("not-a-climate", "winter")
         with self.assertRaises(ValueError):
             IntermittentFrontWeatherEngine("Cfb", "monsoon")
+        with self.assertRaises(ValueError):
+            IntermittentFrontWeatherEngine("Cfb", "winter", altitude="mountain")
+
+    def test_altitude_modifies_center_and_all_region_baselines(self):
+        sea_level = IntermittentFrontWeatherEngine(
+            "Cfb", "summer", random.Random(4), altitude="sea level"
+        )
+        high_altitude = IntermittentFrontWeatherEngine(
+            "Cfb", "summer", random.Random(4), altitude="high"
+        )
+
+        self.assertAlmostEqual(
+            high_altitude.center.air_pressure_kpa,
+            sea_level.center.air_pressure_kpa * math.exp(-5.0 / 8.4),
+        )
+        self.assertAlmostEqual(
+            high_altitude.center.temperature_celsius,
+            sea_level.center.temperature_celsius - 6.5 * 5.0,
+        )
+        self.assertAlmostEqual(
+            high_altitude.center.relative_humidity_percent,
+            sea_level.center.relative_humidity_percent - 2.0 * 5.0,
+        )
+        for direction in sea_level.DIRECTIONS:
+            self.assertLess(
+                high_altitude.regions[direction].air_pressure_kpa,
+                sea_level.regions[direction].air_pressure_kpa,
+            )
+            self.assertLess(
+                high_altitude.regions[direction].temperature_celsius,
+                sea_level.regions[direction].temperature_celsius,
+            )
+            self.assertLess(
+                high_altitude.regions[direction].relative_humidity_percent,
+                sea_level.regions[direction].relative_humidity_percent,
+            )
+
+    def test_sea_level_keeps_preset_baselines(self):
+        engine = IntermittentFrontWeatherEngine(
+            "Cfb", "summer", random.Random(4), altitude="sea level"
+        )
+        season = climate_options["Cfb"].summer
+
+        self.assertEqual(engine.center.air_pressure_kpa, season.air_pressure_kpa)
+        self.assertEqual(engine.center.temperature_celsius, season.temperature_celsius)
+        self.assertEqual(engine.center.relative_humidity_percent, season.relative_humidity_percent)
+        self.assertEqual(engine.standard_pressure_kpa, engine.STANDARD_PRESSURE_KPA)
+
+    def test_highland_climates_default_to_moderate_altitude(self):
+        for climate_code in ("Cwb", "Cwc"):
+            with self.subTest(climate=climate_code):
+                engine = IntermittentFrontWeatherEngine(
+                    climate_code, "summer", random.Random(4)
+                )
+                self.assertEqual(engine.altitude_level, "moderate")
+                self.assertEqual(engine.altitude_km, 2.0)
+                self.assertEqual(engine.reference_altitude_km, 2.0)
+                season = climate_options[climate_code].summer
+                self.assertEqual(engine.center.air_pressure_kpa, season.air_pressure_kpa)
+                self.assertEqual(engine.center.temperature_celsius, season.temperature_celsius)
+                self.assertEqual(engine.center.relative_humidity_percent, season.relative_humidity_percent)
+
+    def test_explicit_altitude_overrides_climate_default(self):
+        engine = IntermittentFrontWeatherEngine(
+            "Cwb", "summer", random.Random(4), altitude="high"
+        )
+
+        self.assertEqual(engine.altitude_level, "high")
+        self.assertEqual(engine.altitude_km, 5.0)
+        self.assertEqual(engine.reference_altitude_km, 2.0)
+        self.assertAlmostEqual(
+            engine.center.temperature_celsius,
+            climate_options["Cwb"].summer.temperature_celsius - 6.5 * 3.0,
+        )
+
+    def test_altitude_choices_include_context_ranges(self):
+        self.assertEqual(ALTITUDE_LEVELS_KM["sea level"], (0.0, "0 km"))
+        self.assertEqual(ALTITUDE_LEVELS_KM["high"], (5.0, "over 4 km"))
 
     def test_preset_pressure_is_in_kpa(self):
         for climate in climate_options.values():
             for season in ("winter", "spring", "summer", "fall"):
                 pressure = getattr(climate, season).air_pressure_kpa
-                self.assertGreater(pressure, 90.0)
+                self.assertGreater(pressure, 70.0)
                 self.assertLess(pressure, 110.0)
 
     def test_eight_regions_and_tick_history(self):
@@ -36,8 +117,8 @@ class WeatherEngineTests(unittest.TestCase):
             engine.update_weather_tick(tick)
         self.assertEqual(len(engine.history_log), 20)
         for row in engine.history_log:
-            self.assertGreaterEqual(row["moisture_pct"], 0.0)
-            self.assertLessEqual(row["moisture_pct"], 100.0)
+            self.assertGreaterEqual(row["relative_humidity_pct"], 0.0)
+            self.assertLessEqual(row["relative_humidity_pct"], MAX_RELATIVE_HUMIDITY_PERCENT)
             self.assertGreaterEqual(row["precip_chance_pct"], 0.0)
             self.assertLessEqual(row["precip_chance_pct"], 100.0)
             self.assertGreater(row["air_pressure_kpa"], 90.0)
@@ -58,13 +139,17 @@ class WeatherEngineTests(unittest.TestCase):
             patch.object(engine, "_update_regions"),
             patch.object(engine, "_update_center_fluctuations"),
             patch.object(engine, "_calculate_wind", return_value=(0.0, "Calm")),
-            patch.object(engine, "_advect_moisture"),
+            patch.object(engine, "_advect_relative_humidity"),
             patch.object(engine, "_calculate_precipitation_chance", return_value=100.0),
             patch.object(engine.rng, "random", return_value=0.5),
         ):
             metrics = engine.update_weather_tick(1)
 
         self.assertTrue(metrics["precipitation_occurred"])
+        self.assertGreater(metrics["precipitation_mm"], 0.0)
+        self.assertGreater(engine.surface_water_mm, 0.0)
+        self.assertLess(engine.center.relative_humidity_percent, engine.season_node.relative_humidity_percent)
+        self.assertIn("mm", metrics["report"])
         self.assertTrue(any("Precipitation occurred" in event for event in engine.events))
 
     def test_precipitation_chance_can_produce_no_event(self):
@@ -74,14 +159,106 @@ class WeatherEngineTests(unittest.TestCase):
             patch.object(engine, "_update_regions"),
             patch.object(engine, "_update_center_fluctuations"),
             patch.object(engine, "_calculate_wind", return_value=(0.0, "Calm")),
-            patch.object(engine, "_advect_moisture"),
+            patch.object(engine, "_advect_relative_humidity"),
             patch.object(engine, "_calculate_precipitation_chance", return_value=0.0),
             patch.object(engine.rng, "random", return_value=0.5),
         ):
             metrics = engine.update_weather_tick(1)
 
         self.assertFalse(metrics["precipitation_occurred"])
+        self.assertEqual(metrics["precipitation_mm"], 0.0)
         self.assertFalse(any("Precipitation occurred" in event for event in engine.events))
+
+    def test_precipitation_normal_scales_chance_and_event_amount(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(10))
+        engine.season_node = replace(
+            engine.season_node,
+            precipitation_mm_per_month=120.0,
+        )
+        engine.center.air_pressure_kpa = 100.0
+        engine.center.relative_humidity_percent = 80.0
+
+        chance = engine._calculate_precipitation_chance()
+        amount = engine._calculate_precipitation_amount(chance)
+
+        self.assertEqual(chance, 100.0)
+        self.assertAlmostEqual(amount, 120.0 / 720.0, places=2)
+
+    def test_zero_precipitation_normal_prevents_precipitation(self):
+        engine = IntermittentFrontWeatherEngine("BWh", "summer", random.Random(10))
+        engine.season_node = replace(
+            engine.season_node,
+            precipitation_mm_per_month=0.0,
+        )
+        engine.center.air_pressure_kpa = 99.0
+        engine.center.relative_humidity_percent = 100.0
+
+        self.assertEqual(engine._calculate_precipitation_chance(), 0.0)
+
+    def test_rain_reduces_relative_humidity_and_evaporates_in_following_hours(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.center.relative_humidity_percent = 50.0
+        engine.center.temperature_celsius = 20.0
+        engine.surface_water_mm = 5.0
+
+        engine._evaporate_surface_water()
+
+        self.assertLess(engine.surface_water_mm, 5.0)
+        self.assertGreater(engine.center.relative_humidity_percent, 50.0)
+
+    def test_frozen_water_evaporates_more_slowly_than_liquid_water(self):
+        liquid = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        frozen = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(10))
+        liquid.center.relative_humidity_percent = 50.0
+        liquid.surface_water_mm = 5.0
+        frozen.center.relative_humidity_percent = 50.0
+        frozen.surface_ice_mm = 5.0
+        liquid.center.temperature_celsius = 20.0
+        frozen.center.temperature_celsius = -10.0
+
+        liquid._evaporate_surface_water()
+        frozen._evaporate_surface_water()
+
+        self.assertGreater(
+            5.0 - liquid.surface_water_mm,
+            5.0 - frozen.surface_ice_mm,
+        )
+
+    def test_surface_water_freezes_when_temperature_drops_below_freezing(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "fall", random.Random(10))
+        engine.center.temperature_celsius = -1.0
+        engine.surface_water_mm = 2.0
+
+        engine._evaporate_surface_water()
+
+        self.assertEqual(engine.surface_water_mm, 0.0)
+        self.assertAlmostEqual(engine.surface_ice_mm, 2.0, places=2)
+
+    def test_saturated_air_restricts_evaporation_and_supersaturation_is_allowed(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.center.temperature_celsius = 20.0
+        engine.surface_water_mm = 5.0
+        engine.center.relative_humidity_percent = 105.0
+
+        engine._evaporate_surface_water()
+
+        self.assertEqual(engine.surface_water_mm, 5.0)
+        self.assertEqual(engine.center.relative_humidity_percent, 105.0)
+
+    def test_cooling_can_raise_relative_humidity_above_saturation(self):
+        engine = IntermittentFrontWeatherEngine("Cfb", "summer", random.Random(10))
+        engine.center.temperature_celsius = 20.0
+        engine.center.relative_humidity_percent = 99.99
+        engine.rng = random.Random(2)
+        engine.rng.uniform = lambda minimum, maximum: -0.15
+
+        engine._update_center_fluctuations()
+
+        self.assertGreater(engine.center.relative_humidity_percent, 100.0)
+        self.assertLessEqual(
+            engine.center.relative_humidity_percent,
+            MAX_RELATIVE_HUMIDITY_PERCENT,
+        )
 
     def test_wind_direction_matches_high_pressure_region(self):
         engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(1))
@@ -98,25 +275,25 @@ class WeatherEngineTests(unittest.TestCase):
                 self.assertGreater(wind_speed, 0.5)
                 self.assertEqual(wind_direction, direction)
 
-    def test_moisture_advection_uses_wind_from_region(self):
+    def test_relative_humidity_advection_uses_wind_from_region(self):
         engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(1))
         center_pressure = engine.center.air_pressure_kpa
 
         for direction in engine.DIRECTIONS:
             with self.subTest(direction=direction):
-                engine.center.moisture_percent = 50.0
+                engine.center.relative_humidity_percent = 50.0
                 for region in engine.regions.values():
                     region.air_pressure_kpa = center_pressure
-                    region.moisture_percent = 20.0
+                    region.relative_humidity_percent = 20.0
 
                 engine.regions[direction].air_pressure_kpa = center_pressure + 0.1
-                engine.regions[direction].moisture_percent = 80.0
+                engine.regions[direction].relative_humidity_percent = 80.0
                 wind_speed, wind_direction = engine._calculate_wind()
 
                 self.assertEqual(wind_direction, direction)
-                engine._advect_moisture(wind_speed, wind_direction)
+                engine._advect_relative_humidity(wind_speed, wind_direction)
 
-                self.assertAlmostEqual(engine.center.moisture_percent, 56.0)
+                self.assertAlmostEqual(engine.center.relative_humidity_percent, 56.0)
 
     def test_run_simulation_records_requested_ticks(self):
         engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(10))
@@ -125,6 +302,23 @@ class WeatherEngineTests(unittest.TestCase):
 
         self.assertEqual(len(engine.history_log), 5)
         self.assertEqual([row["tick"] for row in engine.history_log], [1, 2, 3, 4, 5])
+        self.assertEqual([row["elapsed_hours"] for row in engine.history_log], [1, 2, 3, 4, 5])
+        self.assertIn("Hour 1:", engine.history_log[0]["report"])
+        self.assertIn("wind from", engine.history_log[0]["report"])
+        self.assertIn("relative humidity", engine.history_log[0]["report"])
+        self.assertIn("precipitation", engine.history_log[0]["report"])
+
+    def test_run_simulation_prints_reports_only_for_at_most_50_ticks(self):
+        short_engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(10))
+        short_console: list[str] = []
+        run_simulation(short_engine, 50, short_console.append)
+        self.assertTrue(any(message.startswith("Hour 1:") for message in short_console))
+
+        long_engine = IntermittentFrontWeatherEngine("Cfb", "winter", random.Random(10))
+        long_console: list[str] = []
+        run_simulation(long_engine, 51, long_console.append)
+        self.assertEqual(long_console, [])
+        self.assertTrue(all("report" in row for row in long_engine.history_log))
 
 if __name__ == "__main__":
     unittest.main()

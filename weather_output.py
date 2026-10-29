@@ -20,9 +20,16 @@ def save_json(timestamp, engine, output_dir: str | Path = "generated") -> Path:
         "climate_code": engine.climate_code,
         "climate_fullname": engine.base_data.fullname,
         "simulated_season": engine.season,
+        "altitude_level": engine.altitude_level,
+        "altitude_km": engine.altitude_km,
+        "climate_default_altitude": engine.base_data.default_altitude,
+        "climate_reference_altitude_km": engine.reference_altitude_km,
         "total_ticks": len(engine.history_log),
+        "tick_duration_hours": 1,
+        "total_hours": len(engine.history_log),
         "timestamp": timestamp.isoformat(),
         "pressure_unit": "kPa",
+        "precipitation_unit": "mm",
         "timeline_data": engine.history_log,
     }
     destination.write_text(json.dumps(packet, indent=4), encoding="utf-8")
@@ -30,7 +37,7 @@ def save_json(timestamp, engine, output_dir: str | Path = "generated") -> Path:
 
 
 def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
-    """Plot moisture, precipitation probability, and temperature history."""
+    """Plot relative humidity, precipitation probability, and temperature history."""
     if not engine.history_log:
         raise ValueError("Cannot plot a simulation with no recorded ticks.")
 
@@ -42,31 +49,33 @@ def save_chart(timestamp, engine, output_dir: str | Path = "generated") -> Path:
     )
     destination = output_path / filename
 
-    ticks = [item["tick"] for item in engine.history_log]
-    moisture = [item["moisture_pct"] for item in engine.history_log]
+    ticks = [item["elapsed_hours"] for item in engine.history_log]
+    relative_humidity = [item["relative_humidity_pct"] for item in engine.history_log]
     precipitation = [item["precip_chance_pct"] for item in engine.history_log]
     temperatures = [item["temperature_celsius"] for item in engine.history_log]
 
-    figure, axis_moisture = plt.subplots(figsize=(11, 6))
-    axis_moisture.set_xlabel("Simulation Timeline (Ticks)", fontsize=11, weight="bold")
-    axis_moisture.set_ylabel("Percentage (%)", fontsize=11)
-    lines = axis_moisture.plot(ticks, moisture, label="Hub Moisture (%)", alpha=0.8)
-    lines += axis_moisture.plot(
+    figure, axis_relative_humidity = plt.subplots(figsize=(11, 6))
+    axis_relative_humidity.set_xlabel("Simulation Time (Hours)", fontsize=11, weight="bold")
+    axis_relative_humidity.set_ylabel("Percentage (%)", fontsize=11)
+    lines = axis_relative_humidity.plot(
+        ticks, relative_humidity, label="Hub Relative Humidity (%)", alpha=0.8
+    )
+    lines += axis_relative_humidity.plot(
         ticks, precipitation, linestyle="--", label="Precipitation Chance (%)", alpha=0.8
     )
-    axis_moisture.set_ylim(-5, 105)
-    axis_moisture.grid(True, linestyle=":", alpha=0.5)
+    axis_relative_humidity.set_ylim(-5, 105)
+    axis_relative_humidity.grid(True, linestyle=":", alpha=0.5)
 
-    axis_temperature = axis_moisture.twinx()
+    axis_temperature = axis_relative_humidity.twinx()
     axis_temperature.set_ylabel("Temperature (°C)", fontsize=11)
     lines += axis_temperature.plot(
         ticks, temperatures, linestyle="-.", label="Temperature (°C)", alpha=0.8
     )
-    axis_moisture.legend(lines, [line.get_label() for line in lines], loc="upper left")
+    axis_relative_humidity.legend(lines, [line.get_label() for line in lines], loc="upper left")
     figure.suptitle(
         f"Weather Simulation Timeline Trends (Intermittent Fronts)\n"
         f"Zone: {engine.base_data.fullname} ({engine.climate_code}) | "
-        f"Timeline: {len(ticks)} Ticks", fontsize=12, weight="bold"
+        f"Timeline: {len(ticks)} Hours", fontsize=12, weight="bold"
     )
     figure.tight_layout()
     figure.savefig(destination, dpi=150)

@@ -1,9 +1,11 @@
 """Command-line entry point for the weather generator."""
 
-from climate_presets import climate_options
-from weather_engine import IntermittentFrontWeatherEngine
-from weather_output import save_outputs
 from collections.abc import Callable
+
+from climate_presets import climate_options
+from weather_engine import ALTITUDE_LEVELS_KM, IntermittentFrontWeatherEngine
+from weather_output import save_outputs
+
 
 def run_simulation(
     engine: IntermittentFrontWeatherEngine,
@@ -14,10 +16,12 @@ def run_simulation(
         raise ValueError("Tick duration must be a positive integer.")
 
     for tick in range(1, total_ticks + 1):
-        engine.update_weather_tick(tick)
-        if on_event is not None:
+        metrics = engine.update_weather_tick(tick)
+        if on_event is not None and total_ticks <= 50:
             for event in engine.events:
                 on_event(event)
+            on_event(metrics["report"])
+
 
 def main() -> None:
     climate_codes = list(climate_options)
@@ -35,18 +39,40 @@ def main() -> None:
             return
 
         user_season = input("Enter Season (winter, spring, summer, fall): ").strip()
+        normalized_code = user_code.lower()
+        climate_code = next(
+            (code for code in climate_codes if code.lower() == normalized_code), None
+        )
+        default_altitude = (
+            climate_options[climate_code].default_altitude
+            if climate_code is not None
+            else "sea level"
+        )
+        print("Altitude options (approximate elevation above sea level):")
+        for level, (_, elevation_range) in ALTITUDE_LEVELS_KM.items():
+            print(f"  {level}: {elevation_range}")
+        user_altitude = input(
+            f"Enter altitude level (blank for climate default: {default_altitude}): "
+        ).strip() or None
         try:
-            total_ticks = int(input("Enter timeline tracking tick duration (e.g., 150): "))
+            total_ticks = int(input("Enter simulation duration in hours (e.g., 150): "))
             if total_ticks <= 0:
                 raise ValueError
         except ValueError:
-            print("\n[Error] Tick duration must be a positive integer. Please try again.")
+            print("\n[Error] Duration must be a positive whole number of hours. Please try again.")
             continue
 
         try:
-            engine = IntermittentFrontWeatherEngine(user_code, user_season)
-            print(f"\nInitializing regions for {engine.base_data.fullname}...")
+            engine = IntermittentFrontWeatherEngine(
+                user_code, user_season, altitude=user_altitude
+            )
+            print(
+                f"\nInitializing regions for {engine.base_data.fullname} "
+                f"at {engine.altitude_level} ({engine.altitude_km:.2f} km)..."
+            )
             run_simulation(engine, total_ticks, lambda event: print(f"   >> {event}"))
+            if total_ticks > 50:
+                print("Detailed hourly reports are included in the saved JSON log.")
 
             json_path, chart_path = save_outputs(engine)
             print(f" -> Log exported successfully to: {json_path}")
